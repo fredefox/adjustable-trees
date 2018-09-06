@@ -1,0 +1,73 @@
+{-# Language NamedFieldPuns, ExplicitForAll, ScopedTypeVariables,
+  RecordWildCards #-}
+module Tree.Unsaturated (Value, Unsaturated, unsaturated, substitute) where
+
+import Data.Tree (Tree(Node))
+import qualified Data.Tree as Tree
+import Data.IORef (IORef, newIORef, readIORef)
+import System.IO.Unsafe (unsafePerformIO)
+import Control.Monad (foldM)
+import Control.Applicative (empty)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+import Control.Monad.Catch
+
+-- Maybe change this to something else later.
+-- | Values in unsaturated can either be metas (represented by @Left@)
+-- or actual values (represented by @Right@).
+type Value a = Either a a
+
+data Unsaturated a = Unsaturated
+  { holeRefs ∷ Map a [IORef (Tree (Value a))]
+  , root     ∷ Tree (Value a)
+  }
+
+instance Show a ⇒ Show (Unsaturated a) where
+  show (Unsaturated { .. }) = "unsaturated (" <> show root <> ")"
+
+unsaturated ∷ ∀ a . Ord a ⇒ Tree (Value a) → Unsaturated a
+unsaturated root = Unsaturated
+  { holeRefs
+  , root
+  }
+  where
+  holeRefs ∷ Map a [IORef (Tree (Value a))]
+  !holeRefs = Map.fromListWith mappend $ unsafePerformIO $ eachNode step root
+  step ∷ Tree (Value a) → IO [(a, [IORef (Tree (Value a))])]
+  step t = case Tree.rootLabel t of
+    Left a  → pure . ((,) a . pure) <$> newIORef t
+    Right{} → pure empty
+
+-- | 'insert' returns an unsaturated tree with one less meta.
+substitute
+  ∷ ∀ a e m
+  . MonadThrow m ⇒ Exception e
+  ⇒ e → Value a → Unsaturated a
+  → m (Unsaturated a)
+substitute = _
+
+eachNode
+  ∷ ∀ w a
+  . Monoid w
+  ⇒ (Tree a → w)
+  → Tree a
+  → w
+eachNode f t@(Node _ xs) = f t <> foldMap (eachNode f) xs
+
+holes ∷ ∀ a . Unsaturated a → Map a [Tree (Value a)]
+holes = unsafePerformIO . traverse (traverse readIORef) . holeRefs
+
+aTree ∷ Tree (Value Char)
+aTree = node 'f'
+  [ node 'r' []
+  , node 'e' []
+  , node 'd' [node 'e' [], meta 'f' [], node 'o' [], node 'x' [], undefined]
+  ]
+
+u = unsaturated aTree
+
+node ∷ a → [Tree (Value a)] → Tree (Value a)
+node c xs = Node (Right c) xs
+
+meta ∷ a → [Tree (Value a)] → Tree (Value a)
+meta c xs = Node (Left c) xs

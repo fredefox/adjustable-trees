@@ -1,0 +1,158 @@
+{-# OPTIONS_GHC -Wall #-}
+{-# OPTIONS_GHC -Wno-unused-imports #-}
+{-# Language NamedFieldPuns, ExplicitForAll, ScopedTypeVariables,
+  RecordWildCards, InstanceSigs, RankNTypes, BangPatterns, GADTs,
+  KindSignatures #-}
+module Tree.Unsaturated where
+
+import Prelude hiding (lookup, filter)
+import Control.Monad.ST (ST, runST, RealWorld, stToIO)
+import Data.STRef (STRef, newSTRef, modifySTRef', writeSTRef)
+import qualified Data.STRef as ST
+import System.IO.Unsafe (unsafePerformIO)
+import Data.Tree (Tree)
+import qualified Data.Tree as Tree
+import Control.Monad.Catch (MonadThrow(throwM), Exception)
+import Control.Monad.Writer
+import Control.Applicative (Alternative(..))
+
+type SIORef = STRef RealWorld
+type STIO   = ST RealWorld
+
+class Builder (m ∷ * → * → *) where
+  readSTRef ∷ STRef s a → m s a
+
+instance Builder ST where
+  readSTRef = ST.readSTRef
+
+-- | A tree where each edge can be replaced.
+data RefTree a = Node
+  { rootLabel ∷ a
+  , subForest ∷ ![SIORef (RefTree a)]
+  }
+
+foldTree ∷ (a → [b] → b) → RefTree a → b
+foldTree f (Node x xs) = f x (map step xs)
+  where
+  step = foldTree f . unsafeRunST . readSTRef
+
+unsafeRunST ∷ STIO a → a
+unsafeRunST = unsafePerformIO . stToIO
+
+instance Functor RefTree where
+  fmap ∷ ∀ a b . (a → b) → RefTree a → RefTree b
+  fmap f (Node x xs) = Node (f x) (unsafeRunST $ traverse step xs)
+    where
+    -- step = step (fmap f)
+    step ∷ SIORef (RefTree a) → STIO (SIORef (RefTree b))
+    step = mapSTRef (fmap f)
+
+-- Not a functor because the result is in @'ST' s@.
+mapSTRef ∷ (a → b) → STRef s a → ST s (STRef s b)
+mapSTRef f ref = do
+  !a ← readSTRef ref
+  newSTRef $! f a
+
+fromTree ∷ ∀ a . Tree a → RefTree a
+fromTree = Tree.foldTree step
+  where
+  step ∷ a → [RefTree a] → RefTree a
+  step a as = Node a (unsafeRunST $ traverse newSTRef as)
+
+-- "freezes" the tree.
+toTree ∷ RefTree a → Tree a
+toTree = foldTree Tree.Node
+
+-- | Find all pointers to all children with label matching the predicate.
+findChildren
+  ∷ ∀ a
+  . (a → Bool)
+  → RefTree a
+  → [SIORef (RefTree a)]
+findChildren p t = foldMapRefTree step t
+  where
+  step ∷ RefTree a → [SIORef (RefTree a)]
+  step (subForest → xs) = filter q xs <> concatMap f xs
+  f = findChildren p . unsafeRunST . readSTRef
+  q ∷ SIORef (RefTree a) → Bool
+  q = p . rootLabel . unsafeRunST . readSTRef
+
+filter
+  ∷ Applicative f
+  ⇒ Foldable f
+  ⇒ Monoid (f a)
+  ⇒ (a -> Bool)
+  → f a
+  → f a
+filter p = foldMap (\a -> if p a then pure a else mempty)
+
+foldMapTree
+  ∷ ∀ w a
+  . Monoid w
+  ⇒ (Tree a → w)
+  → Tree a
+  → w
+foldMapTree f t@(Tree.Node _ xs) = f t <> foldMap (foldMapTree f) xs
+
+foldMapRefTree
+  ∷ ∀ w a
+  . Monoid w
+  ⇒ (RefTree a → w)
+  → RefTree a
+  → w
+foldMapRefTree f t@(Node _ xs) = f t <> foldMap step xs
+  where
+  step = foldMapRefTree f . unsafeRunST . readSTRef
+
+-- | A filter on all /sub trees/.  This means in particular that a
+-- result can occur as the decendent of other results.
+filterDecendants
+  ∷ (RefTree a → Bool)
+  → RefTree a
+  → [RefTree a]
+filterDecendants p = foldMapRefTree (\t -> if p t then pure t else mempty)
+
+-- Maybe change this to something else later.
+-- | Values in unsaturated can either be metas (represented by @Left@)
+-- or actual values (represented by @Right@).
+type Value a = Either a a
+
+type Unsat a = RefTree (Value a)
+
+-- | Find all references to trees with the given label.
+findMetas ∷ ∀ a . Eq a ⇒ a → Unsat a → [SIORef (Unsat a)]
+findMetas a = findChildren p
+  where
+  p ∷ Value a → Bool
+  p = either ((==) a) (const False)
+
+holes ∷ ∀ a . [Tree (Value a)] → Unsat a → [Tree (Value a)]
+-- holes = unsafeRunST . traverse (traverse readSTRef) . _holeRefs
+-- holes = map (toTree . unsafeRunST . readSTRef) . findChildren p
+--   where
+--   p = either (const True) (const False)
+holes xs t = replaceAll $ findChildren p t
+  where
+  p = either (const True) (const False)
+  replaceAll ∷ [SIORef (RefTree (Either a a))] → [Tree (Value a)]
+  replaceAll refs = toTree t : do
+    -- Go through all metas.
+    ref ← refs
+    let prev = unsafeRunST $ readSTRef ref
+    new ← xs
+    let res = unsafeRunST $ writeSTRef ref (fromTree new)
+    let u = toTree t
+    pure $ res `seq` u `seq` prev `seq` u
+
+aTree ∷ Unsat Char
+aTree = node 'f'
+  [ node 'r' []
+  , node 'e' []
+  , node 'd' [node 'e' [], meta 'f' [], node 'o' [], node 'x' []]
+  ]
+
+node ∷ a → [Unsat a] → Unsat a
+node c xs = Node (Right c) (unsafeRunST . newSTRef <$> xs)
+
+meta ∷ a → [Unsat a] → Unsat a
+meta c xs = Node (Left c) (unsafeRunST . newSTRef <$> xs)

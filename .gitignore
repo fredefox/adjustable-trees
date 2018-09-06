@@ -1,0 +1,6 @@
+# Stack
+stack.yaml
+.stack-work/
+.history
+*.log
+*.cabal

@@ -1,0 +1,52 @@
+name: adjustable-trees
+version: 0.0.0.0
+
+dependencies:
+- base >= 4.7 && < 5
+- containers
+- exceptions
+- mtl
+- prettyprinter
+- monad-st
+
+library:
+  source-dirs: src/
+
+  exposed-modules:
+  - Data.Tree.Adjustable
+  - Data.Tree.Unsaturated
+
+  other-modules:
+  - Control.Monad.ST.Lifted
+
+executables:
+  sample:
+    main: Main
+
+    source-dirs: sample
+
+    other-modules:
+    - Pretty
+    - Pretty.Orphans
+
+    dependencies:
+    - adjustable-trees
+
+default-extensions:
+- LambdaCase
+- UnicodeSyntax
+- TypeApplications
+- ViewPatterns
+- NamedFieldPuns
+- ExplicitForAll
+- ScopedTypeVariables
+- RecordWildCards
+- InstanceSigs
+- RankNTypes
+- BangPatterns
+- GADTs
+- KindSignatures
+- MultiParamTypeClasses
+- FlexibleInstances
+- ConstraintKinds
+- TypeFamilies
